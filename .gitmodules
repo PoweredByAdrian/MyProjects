@@ -1,0 +1,3 @@
+[submodule "MyRaidBot"]
+	path = MyRaidBot
+	url = git@github.com:PoweredByAdrian/MyRaidBot.git

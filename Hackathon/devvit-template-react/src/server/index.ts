@@ -1,5 +1,5 @@
 import express from 'express';
-import { InitResponse, IncrementResponse, DecrementResponse, SaveDrawingRequest, SaveDrawingResponse, LoadDrawingRequest, LoadDrawingResponse } from '../shared/types/api';
+import { InitResponse, SaveDrawingRequest, SaveDrawingResponse, LoadDrawingRequest, LoadDrawingResponse, CheckUpdateRequest, CheckUpdateResponse, CheckCooldownRequest, CheckCooldownResponse } from '../shared/types/api';
 import { redis, reddit, createServer, context, getServerPort, media } from '@devvit/web/server';
 import { createPost } from './core/post';
 
@@ -11,6 +11,32 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const router = express.Router();
+
+// Cooldown duration in milliseconds (5 minutes = 300,000 ms)
+const COOLDOWN_DURATION = 5 * 60 * 1000; // 5 minutes
+
+// Function to check if user is in cooldown
+async function checkUserCooldown(userId: string, postId: string): Promise<{ canDraw: boolean; cooldownRemaining?: number; lastDrawTime?: number }> {
+  if (!userId) {
+    return { canDraw: true }; // Allow anonymous users for now
+  }
+  
+  const lastDrawTimeStr = await redis.get(`cooldown:${postId}:${userId}`);
+  
+  if (!lastDrawTimeStr) {
+    return { canDraw: true }; // No previous draw time
+  }
+  
+  const lastDrawTime = parseInt(lastDrawTimeStr);
+  const timeSinceLastDraw = Date.now() - lastDrawTime;
+  
+  if (timeSinceLastDraw >= COOLDOWN_DURATION) {
+    return { canDraw: true, lastDrawTime };
+  }
+  
+  const cooldownRemaining = Math.ceil((COOLDOWN_DURATION - timeSinceLastDraw) / 1000); // in seconds
+  return { canDraw: false, cooldownRemaining, lastDrawTime };
+}
 
 router.get<{ postId: string }, InitResponse | { status: string; message: string }>(
   '/api/init',
@@ -27,11 +53,23 @@ router.get<{ postId: string }, InitResponse | { status: string; message: string 
     }
 
     try {
-      const [count, username, drawingData] = await Promise.all([
-        redis.get('count'),
+      const [username, drawingData, timestampStr] = await Promise.all([
         reddit.getCurrentUsername(),
-        redis.get(`drawing:${postId}`)
+        redis.get(`drawing:${postId}`),
+        redis.get(`drawing_timestamp:${postId}`)
       ]);
+      
+      // Get current user ID for cooldown tracking
+      const currentUser = await reddit.getCurrentUser();
+      const userId = currentUser?.id;
+
+      const timestamp = timestampStr ? parseInt(timestampStr) : undefined;
+      
+      // Check cooldown status for this user
+      let cooldownInfo: { canDraw: boolean; cooldownRemaining?: number; lastDrawTime?: number } = { canDraw: true };
+      if (userId) {
+        cooldownInfo = await checkUserCooldown(userId, postId);
+      }
 
       // The initial stroke should already exist from post creation
       // If it doesn't exist for some reason, log an error but don't create it here
@@ -42,9 +80,12 @@ router.get<{ postId: string }, InitResponse | { status: string; message: string 
       res.json({
         type: 'init',
         postId: postId,
-        count: count ? parseInt(count) : 0,
         username: username ?? 'anonymous',
-        drawingData: drawingData || null
+        ...(userId && { userId: userId }),
+        drawingData: drawingData || null,
+        canDraw: cooldownInfo.canDraw,
+        ...(cooldownInfo.cooldownRemaining && { cooldownRemaining: cooldownInfo.cooldownRemaining }),
+        ...(timestamp && { timestamp })
       });
     } catch (error) {
       console.error(`API Init Error for post ${postId}:`, error);
@@ -56,50 +97,6 @@ router.get<{ postId: string }, InitResponse | { status: string; message: string 
     }
   }
 );
-
-router.post<{ postId: string }, IncrementResponse | { status: string; message: string }, unknown>(
-  '/api/increment',
-  async (_req, res): Promise<void> => {
-    const { postId } = context;
-    if (!postId) {
-      res.status(400).json({
-        status: 'error',
-        message: 'postId is required',
-      });
-      return;
-    }
-
-    res.json({
-      count: await redis.incrBy('count', 1),
-      postId,
-      type: 'increment',
-    });
-  }
-);
-
-router.post<{ postId: string }, DecrementResponse | { status: string; message: string }, unknown>(
-  '/api/decrement',
-  async (_req, res): Promise<void> => {
-    const { postId } = context;
-    if (!postId) {
-      res.status(400).json({
-        status: 'error',
-        message: 'postId is required',
-      });
-      return;
-    }
-
-    res.json({
-      count: await redis.incrBy('count', -1),
-      postId,
-      type: 'decrement',
-    });
-  }
-);
-
-router.get('/api/heartbeat', async (_req, res): Promise<void> => {
-  res.json({ status: 'ok', timestamp: Date.now() });
-});
 
 // Helper function to post canvas image to subreddit after each stroke
 async function postCanvasImageToSubreddit(postId: string, drawingData: string, strokeCount: number) {
@@ -216,8 +213,7 @@ Visit the main drawing post to see the current canvas and add your own stroke.
   }
 }
 
-
-
+// GIF Generation Function
 // Helper function to update post progress with a comment and image
 // Save drawing data endpoint
 router.post<{}, SaveDrawingResponse | { status: string; message: string }, SaveDrawingRequest>(
@@ -236,12 +232,38 @@ router.post<{}, SaveDrawingResponse | { status: string; message: string }, SaveD
 
       console.log(`Saving drawing for post ${postId}, data size: ${drawingData.length} characters`);
       
+      // Get current user ID for cooldown checking
+      const currentUser = await reddit.getCurrentUser();
+      const userId = currentUser?.id;
+      
+      // Check cooldown if user has ID
+      if (userId) {
+        const cooldownResult = await checkUserCooldown(userId, postId);
+        
+        if (!cooldownResult.canDraw) {
+          res.status(429).json({
+            status: 'error',
+            message: `You must wait ${cooldownResult.cooldownRemaining} seconds before drawing again`,
+          });
+          return;
+        }
+      }
+      
+      // Create timestamp for this update
+      const timestamp = Date.now();
+      
       // Store the drawing data in Redis
       await redis.set(`drawing:${postId}`, drawingData);
       
-      // This is a user stroke - increment stroke count and post canvas
+      // Store the timestamp for this drawing update
+      await redis.set(`drawing_timestamp:${postId}`, timestamp.toString());
+      
+      // This is a user stroke - increment stroke count
       const newStrokeCount = await redis.incrBy(`strokes:${postId}`, 1);
-      console.log(`Stroke count for post ${postId}: ${newStrokeCount}`);
+      console.log(`📈 Stroke count for post ${postId}: ${newStrokeCount} at ${new Date(timestamp).toLocaleString()}`);
+      
+      // Check if artwork is completed (500 strokes)
+      const completed = newStrokeCount >= 500;
       
       // Post the current canvas image to the subreddit after each stroke
       await postCanvasImageToSubreddit(postId, drawingData, newStrokeCount);
@@ -250,15 +272,19 @@ router.post<{}, SaveDrawingResponse | { status: string; message: string }, SaveD
       const finalStrokeCount = await redis.get(`strokes:${postId}`);
       const finalCount = finalStrokeCount ? parseInt(finalStrokeCount) : 0;
       
-      // Check if artwork is completed (500 strokes)
-      const completed = finalCount >= 500;
+      // Record user's draw time for cooldown tracking
+      if (userId) {
+        await redis.set(`cooldown:${postId}:${userId}`, timestamp.toString());
+        console.log(`🕒 Recorded cooldown for user ${userId} on post ${postId} at ${new Date(timestamp).toLocaleString()}`);
+      }
       
       res.json({
         type: 'save-drawing',
         postId,
         success: true,
         strokeCount: finalCount,
-        completed
+        completed,
+        timestamp
       });
       
     } catch (error) {
@@ -291,6 +317,12 @@ router.post<{}, LoadDrawingResponse | { status: string; message: string }, LoadD
       // Get the drawing data from Redis
       const drawingData = await redis.get(`drawing:${postId}`);
       
+      // Get the timestamp when this drawing was last updated
+      const timestampStr = await redis.get(`drawing_timestamp:${postId}`);
+      const timestamp = timestampStr ? parseInt(timestampStr) : undefined;
+      
+      console.log(`📋 Loading drawing for post ${postId}, timestamp: ${timestamp ? new Date(timestamp).toLocaleString() : 'none'}`);
+      
       // Check if this is the first time loading and if we need to post initial canvas
       if (drawingData) {
         // Log that we have initial stroke data for rendering only
@@ -305,7 +337,8 @@ router.post<{}, LoadDrawingResponse | { status: string; message: string }, LoadD
       res.json({
         type: 'load-drawing',
         postId,
-        drawingData: drawingData || null
+        drawingData: drawingData || null,
+        ...(timestamp && { timestamp })
       });
       
     } catch (error) {
@@ -313,6 +346,96 @@ router.post<{}, LoadDrawingResponse | { status: string; message: string }, LoadD
       res.status(500).json({
         status: 'error',
         message: 'Failed to load drawing data',
+      });
+    }
+  }
+);
+
+// Check if drawing has been updated since last known timestamp
+router.post<{}, CheckUpdateResponse | { status: string; message: string }, CheckUpdateRequest>(
+  '/api/check-update',
+  async (req, res): Promise<void> => {
+    try {
+      const { postId, lastKnownTimestamp } = req.body;
+      
+      if (!postId) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Missing postId',
+        });
+        return;
+      }
+
+      // Get the current timestamp for this drawing
+      const timestampStr = await redis.get(`drawing_timestamp:${postId}`);
+      const currentTimestamp = timestampStr ? parseInt(timestampStr) : undefined;
+      
+      const hasUpdate = currentTimestamp !== undefined && 
+                       (lastKnownTimestamp === undefined || currentTimestamp > lastKnownTimestamp);
+      
+      console.log(`🔄 Check update for ${postId}: current=${currentTimestamp}, lastKnown=${lastKnownTimestamp}, hasUpdate=${hasUpdate}`);
+      
+      res.json({
+        type: 'check-update',
+        postId,
+        hasUpdate,
+        ...(hasUpdate && currentTimestamp && { timestamp: currentTimestamp })
+      });
+      
+    } catch (error) {
+      console.error(`Error checking update for post ${req.body?.postId}:`, error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to check for updates',
+      });
+    }
+  }
+);
+
+// Check user cooldown endpoint
+router.post<{}, CheckCooldownResponse | { status: string; message: string }, CheckCooldownRequest>(
+  '/api/check-cooldown',
+  async (req, res): Promise<void> => {
+    try {
+      const { postId } = req.body;
+      
+      if (!postId) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Missing postId',
+        });
+        return;
+      }
+
+      // Get current user ID
+      const currentUser = await reddit.getCurrentUser();
+      const userId = currentUser?.id;
+      
+      if (!userId) {
+        // Allow anonymous users or users without ID
+        res.json({
+          type: 'check-cooldown',
+          postId,
+          canDraw: true
+        });
+        return;
+      }
+
+      const cooldownResult = await checkUserCooldown(userId, postId);
+      
+      res.json({
+        type: 'check-cooldown',
+        postId,
+        canDraw: cooldownResult.canDraw,
+        ...(cooldownResult.cooldownRemaining && { cooldownRemaining: cooldownResult.cooldownRemaining }),
+        ...(cooldownResult.lastDrawTime && { lastDrawTime: cooldownResult.lastDrawTime })
+      });
+      
+    } catch (error) {
+      console.error(`Error checking cooldown for post ${req.body?.postId}:`, error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to check cooldown',
       });
     }
   }
@@ -348,6 +471,51 @@ router.post<{}, { strokeCount: number } | { status: string; message: string }, {
       res.status(500).json({
         status: 'error',
         message: 'Failed to get stroke count',
+      });
+    }
+  }
+);
+
+// Get drawing statistics and GIF data endpoint
+router.post<{}, { strokeCount: number; metadata?: any; gifData?: any } | { status: string; message: string }, { postId: string }>(
+  '/api/get-drawing-stats',
+  async (req, res): Promise<void> => {
+    try {
+      const { postId } = req.body;
+      
+      if (!postId) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Missing postId',
+        });
+        return;
+      }
+
+      console.log(`Getting drawing stats for post ${postId}`);
+      
+      // Get the stroke count from Redis
+      const strokeCountStr = await redis.get(`strokes:${postId}`);
+      const strokeCount = strokeCountStr ? parseInt(strokeCountStr) : 0;
+      
+      // Get metadata if available
+      const metadataStr = await redis.get(`metadata:${postId}`);
+      const metadata = metadataStr ? JSON.parse(metadataStr) : null;
+      
+      // Get GIF data if available
+      const gifDataStr = await redis.get(`gif_data:${postId}`);
+      const gifData = gifDataStr ? JSON.parse(gifDataStr) : null;
+      
+      res.json({
+        strokeCount,
+        ...(metadata && { metadata }),
+        ...(gifData && { gifData })
+      });
+      
+    } catch (error) {
+      console.error(`Error getting drawing stats for post ${req.body?.postId}:`, error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to get drawing stats',
       });
     }
   }
@@ -395,6 +563,3 @@ const port = getServerPort();
 const server = createServer(app);
 server.on('error', (err) => console.error(`server error; ${err.stack}`));
 server.listen(port);
-
-// Export the function for use in other modules
-export { postCanvasImageToSubreddit };

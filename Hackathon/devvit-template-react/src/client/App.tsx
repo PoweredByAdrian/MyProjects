@@ -15,6 +15,7 @@ export const App = () => {
   const [lastLoadTime, setLastLoadTime] = useState<number>(0); // Track when we last loaded drawing data
   const [currentStrokeCount, setCurrentStrokeCount] = useState<number>(0); // Track current stroke count
   const [isInitializing, setIsInitializing] = useState<boolean>(true); // Track if app is still initializing
+  const [lastKnownTimestamp, setLastKnownTimestamp] = useState<number | undefined>(undefined); // Track timestamp of last canvas update
 
   // Create refs for current values to avoid closure issues
   const currentColorRef = useRef(currentColor);
@@ -57,6 +58,9 @@ export const App = () => {
       // Make sure canvas is not in some weird state
       ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = 1.0;
+      // Ensure any previous path is closed
+      ctx.closePath();
+      ctx.beginPath(); // Start fresh path for new drawing
     }
   };
 
@@ -66,12 +70,13 @@ export const App = () => {
     if (!canvas) return;
 
     const resizeCanvas = () => {
-      const container = canvas.parentElement;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
+      // Set fixed canvas dimensions - no longer responsive
+      const fixedWidth = 720;
+      const fixedHeight = 530;
       const dpr = window.devicePixelRatio || 1;
       
+      console.log('🔄 Setting fixed canvas dimensions');
+
       // Save current canvas content if user has drawn something
       let imageData: ImageData | null = null;
       const ctx = canvas.getContext('2d');
@@ -81,12 +86,12 @@ export const App = () => {
       }
       
       // Set actual canvas size (high DPI support)
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      canvas.width = fixedWidth * dpr;
+      canvas.height = fixedHeight * dpr;
       
       // Set display size
-      canvas.style.width = rect.width + 'px';
-      canvas.style.height = rect.height + 'px';
+      canvas.style.width = fixedWidth + 'px';
+      canvas.style.height = fixedHeight + 'px';
       
       // Scale context for high DPI
       if (ctx) {
@@ -115,6 +120,8 @@ export const App = () => {
       } else {
         console.log('resizeCanvas: Not loading drawing data - hasLoadedInitialDrawing:', hasLoadedInitialDrawing, 'postId:', !!postId, 'userHasDrawn:', userHasDrawn);
       }
+      
+      console.log('✅ Canvas setup complete with fixed dimensions');
     };
 
     // Add non-passive touch event listeners to handle preventDefault properly
@@ -157,12 +164,21 @@ export const App = () => {
         if (ctx) {
           console.log('Touch: Setting stroke color to:', currentColorRef.current, 'size:', brushSizeRef.current);
           console.log('Touch coordinates:', x, y);
+          
+          // Ensure we're starting with a clean drawing state
           ctx.strokeStyle = currentColorRef.current;
           ctx.lineWidth = brushSizeRef.current;
           ctx.lineCap = 'round';
           ctx.lineJoin = 'round';
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1.0;
+          
+          // Close any existing path and start a fresh one
+          ctx.closePath();
           ctx.beginPath();
           ctx.moveTo(x, y);
+          
+          console.log('Started new touch drawing path at:', x, y);
         }
       }
     };
@@ -237,11 +253,7 @@ export const App = () => {
     canvas.addEventListener('touchmove', handleTouchMovePassive, { passive: false });
     canvas.addEventListener('touchend', handleTouchEndPassive, { passive: false });
     
-    // Handle window resize
-    window.addEventListener('resize', resizeCanvas);
-    
     return () => {
-      window.removeEventListener('resize', resizeCanvas);
       canvas.removeEventListener('touchstart', handleTouchStartPassive);
       canvas.removeEventListener('touchmove', handleTouchMovePassive);
       canvas.removeEventListener('touchend', handleTouchEndPassive);
@@ -279,13 +291,19 @@ export const App = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
               postId: postId,
-              drawingData: drawingData 
+              drawingData: drawingData
             }),
           });
           
           if (response.ok) {
             const data = await response.json();
             console.log('Drawing saved successfully');
+            
+            // Update our timestamp when we save
+            if (data.timestamp) {
+              setLastKnownTimestamp(data.timestamp);
+              console.log('Updated local timestamp to:', data.timestamp);
+            }
             
             // Update stroke count if provided by server
             if (data.strokeCount !== undefined) {
@@ -300,7 +318,7 @@ export const App = () => {
             if (data.completed) {
               console.log('🎉 Artwork completed! 500 strokes reached.');
               // Show a completion message
-              alert('🎉 Congratulations! This collaborative artwork has reached 500 strokes and is now complete!\n\nA new canvas has been created for continued collaboration. Thank you for being part of this amazing community art project!');
+              alert('🎉 Congratulations! This collaborative artwork has reached 500 strokes and is now complete!\n\nA time-lapse GIF is being generated and will be posted to the subreddit shortly. Thank you for being part of this amazing community art project!');
             }
           } else {
             console.error('Failed to save drawing:', response.status);
@@ -312,6 +330,36 @@ export const App = () => {
       
     } catch (error) {
       console.error('Failed to save drawing:', error);
+    }
+  };
+
+  // Function to check if there are updates available
+  const checkForUpdates = async () => {
+    if (!postId) return;
+
+    try {
+      const response = await fetch('/api/check-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          postId: postId,
+          lastKnownTimestamp: lastKnownTimestamp
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('📡 Update check result:', result.hasUpdate, 'timestamp:', result.timestamp);
+        
+        if (result.hasUpdate) {
+          console.log('🆕 New update available, loading latest drawing...');
+          await loadDrawingData(true); // Force refresh
+        }
+      } else {
+        console.error('Failed to check for updates:', response.statusText);
+      }
+    } catch (error) {
+      console.error('Error checking for updates:', error);
     }
   };
 
@@ -406,12 +454,15 @@ export const App = () => {
                 }
                 
                 ctx.stroke();
+                ctx.closePath(); // Close the initial stroke path
                 
                 // Reset canvas context to user's current settings after drawing initial stroke
                 ctx.strokeStyle = currentColorRef.current;
                 ctx.lineWidth = brushSizeRef.current;
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = 1.0;
                 
                 console.log('🎨 Initial stroke drawn on canvas');
                 
@@ -474,6 +525,12 @@ export const App = () => {
               
               setHasLoadedInitialDrawing(true);
               setLastLoadTime(Date.now()); // Track when we successfully loaded
+              
+              // Update timestamp if provided
+              if (data.timestamp) {
+                setLastKnownTimestamp(data.timestamp);
+                console.log('Updated timestamp from server:', data.timestamp);
+              }
               
               // Log collaborative update if this was not the initial load
               if (hasLoadedInitialDrawing && userHasDrawn) {
@@ -576,6 +633,12 @@ export const App = () => {
           setPostId(receivedPostId);
           console.log('PostId set to:', receivedPostId);
           
+          // Set initial timestamp if provided
+          if (data.timestamp) {
+            setLastKnownTimestamp(data.timestamp);
+            console.log('Initial timestamp set to:', data.timestamp);
+          }
+          
           // Fetch current stroke count for this post
           try {
             const strokeResponse = await fetch('/api/get-stroke-count', {
@@ -641,12 +704,15 @@ export const App = () => {
                   }
                   
                   ctx.stroke();
+                  ctx.closePath(); // Close the initial stroke path
                   
                   // Reset canvas context to user's current settings after drawing initial stroke
                   ctx.strokeStyle = currentColorRef.current;
                   ctx.lineWidth = brushSizeRef.current;
                   ctx.lineCap = 'round';
                   ctx.lineJoin = 'round';
+                  ctx.globalCompositeOperation = 'source-over';
+                  ctx.globalAlpha = 1.0;
                   
                   console.log('Initial stroke drawn on canvas from /api/init');
                   
@@ -710,6 +776,20 @@ export const App = () => {
     fetchInitialData();
   }, []);
 
+  // Polling mechanism to check for updates
+  useEffect(() => {
+    if (!postId || isInitializing || hasCompletedStroke) {
+      return; // Don't poll during initialization or after user completed stroke
+    }
+
+    const pollInterval = setInterval(() => {
+      console.log('📡 Polling for updates...');
+      checkForUpdates();
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [postId, isInitializing, hasCompletedStroke, lastKnownTimestamp]);
+
   // Get correct coordinates with proper scaling
   const getCoordinates = (e: React.MouseEvent<HTMLCanvasElement> | MouseEvent) => {
     const canvas = canvasRef.current;
@@ -766,16 +846,28 @@ export const App = () => {
     if (ctx) {
       console.log('Drawing at coordinates:', x, y, 'with color:', currentColorRef.current, 'size:', brushSizeRef.current);
       console.log('Canvas context state - strokeStyle:', ctx.strokeStyle, 'lineWidth:', ctx.lineWidth);
+      
+      // Ensure we're starting with a clean drawing state
       ctx.strokeStyle = currentColorRef.current;
       ctx.lineWidth = brushSizeRef.current;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1.0;
+      
+      // Close any existing path and start a fresh one
+      ctx.closePath();
       ctx.beginPath();
       ctx.moveTo(x, y);
+      
+      console.log('Started new drawing path at:', x, y, 'tracking stroke path');
     }
   };
 
   const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Early return if not actually drawing - don't even log
+    if (!isDrawingRef.current) return;
+    
     // Check if app is still initializing (use ref for immediate check)
     if (isInitializingRef.current) {
       return;
@@ -788,7 +880,6 @@ export const App = () => {
     }
     
     console.log('draw called, isDrawing ref:', isDrawingRef.current, 'state:', isDrawing);
-    if (!isDrawingRef.current) return; // Use ref instead of state
     
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -806,6 +897,12 @@ export const App = () => {
   const stopDrawing = () => {
     console.log('stopDrawing called');
     
+    // Don't process if we weren't actually drawing
+    if (!isDrawingRef.current) {
+      console.log('BLOCKED: stopDrawing called but was not drawing');
+      return;
+    }
+    
     // Don't process if still initializing
     if (isInitializingRef.current) {
       return;
@@ -820,6 +917,14 @@ export const App = () => {
     setIsDrawing(false);
     isDrawingRef.current = false; // Reset ref
     
+    // Close the current drawing path
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (ctx) {
+      ctx.closePath(); // Properly close the current stroke path
+      console.log('Closed drawing path');
+    }
+    
     // Mark that user has completed their one stroke for this session
     setHasCompletedStroke(true);
     hasCompletedStrokeRef.current = true; // Update ref immediately for instant checks
@@ -828,51 +933,76 @@ export const App = () => {
     saveDrawingData();
   };
 
-  // Color palette
-  const colorPalette = [
-    '#000000', '#FF0000', '#00FF00', '#0000FF', 
-    '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500',
-    '#800080', '#FFC0CB', '#A52A2A', '#808080'
-  ];
-
   return (
-    <div className="h-screen w-full bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden">
+    <div 
+      className="bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 shadow-2xl flex flex-col"
+      style={{ 
+        width: '754px', 
+        height: '584px',
+        minWidth: '754px',
+        minHeight: '584px',
+        maxWidth: '754px', 
+        maxHeight: '584px',
+        resize: 'none',
+        position: 'fixed',
+        top: '50%',
+        left: '50%',
+        transform: 'translate(-50%, -50%)',
+        borderRadius: '16px',
+        border: '1px solid rgba(255, 255, 255, 0.2)',
+        backdropFilter: 'blur(10px)'
+      }}
+    >
       {/* Loading Screen Overlay */}
       {isInitializing && (
-        <div className="absolute inset-0 bg-white bg-opacity-95 flex items-center justify-center z-50">
-          <div className="text-center">
-            <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-            <h2 className="text-xl font-semibold text-gray-800 mb-2">🎨 Loading DevvitDrawApp</h2>
-            <p className="text-gray-600 mb-4">Preparing your collaborative canvas...</p>
-            <div className="text-sm text-gray-500">
-              Please wait while we load the current artwork and set up your drawing tools.
+        <div className="absolute inset-0 bg-white bg-opacity-95 backdrop-blur-sm flex items-center justify-center z-50 rounded-2xl">
+          <div className="text-center p-8 bg-white rounded-xl shadow-lg border border-gray-100">
+            <div className="inline-block animate-spin rounded-full h-16 w-16 border-4 border-blue-200 border-t-blue-600 mb-6"></div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-3 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              🎨 DevvitDrawApp
+            </h2>
+            <p className="text-gray-600 mb-4 text-lg">Preparing your collaborative canvas...</p>
+            <div className="text-sm text-gray-500 bg-gray-50 rounded-lg p-3">
+              Loading artwork and setting up drawing tools
             </div>
           </div>
         </div>
       )}
       
-      {/* Header */}
-      <div className="bg-white shadow-sm border-b border-gray-200 px-4 py-3">
+      {/* Header - Fixed Height */}
+      <div className="bg-white bg-opacity-90 backdrop-blur-sm border-b border-gray-200 px-4 py-1 rounded-t-2xl flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold text-gray-800">
+            <h1 className="text-sm font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 bg-clip-text text-transparent">
               🎨 DevvitDrawApp
             </h1>
-            <span className="text-sm text-gray-600">
+            <span className="text-xs text-gray-600 bg-gray-50 px-2 py-0.5 rounded-full">
               Welcome, {username}!
             </span>
-            <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 border border-blue-200 rounded-md">
-              <span className="text-sm font-medium text-blue-700">
-                📊 Strokes: {currentStrokeCount}
+            <div className="flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
+              <span className="text-xs font-semibold text-blue-700">
+                📊 Strokes: {currentStrokeCount}/500
               </span>
+              {currentStrokeCount >= 500 && (
+                <span className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded-full font-medium shadow-sm">
+                  🎉 Complete!
+                </span>
+              )}
             </div>
+            {hasCompletedStroke && (
+              <div className="px-2 py-0.5 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg shadow-sm">
+                <span className="text-xs font-semibold text-green-700">
+                  ✅ Your stroke added!
+                </span>
+              </div>
+            )}
           </div>
           
           {/* Tools */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             {/* Color Picker */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">Color:</label>
+            <div className="flex items-center gap-1 bg-gray-50 px-2 py-0.5 rounded-lg">
+              <label className="text-xs font-semibold text-gray-700">Color:</label>
               <input
                 type="color"
                 value={currentColor}
@@ -882,89 +1012,80 @@ export const App = () => {
                   setCurrentColor(newColor);
                   console.log('setCurrentColor called with:', newColor);
                 }}
-                className="w-8 h-8 rounded border border-gray-300 cursor-pointer"
+                className="w-5 h-5 rounded border border-gray-300 cursor-pointer"
               />
             </div>
 
             {/* Brush Size */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">Size:</label>
+            <div className="flex items-center gap-1 bg-gray-50 px-2 py-0.5 rounded-lg">
+              <label className="text-xs font-semibold text-gray-700">Size:</label>
               <input
                 type="range"
                 min="1"
-                max="20"
+                max="10"
                 value={brushSize}
                 onChange={(e) => {
                   console.log('Brush size changed to:', e.target.value);
                   setBrushSize(Number(e.target.value));
                 }}
-                className="w-16"
+                className="w-12 h-1 bg-blue-100 rounded appearance-none cursor-pointer"
               />
-              <span className="text-sm text-gray-600 w-6">{brushSize}</span>
+              <span className="text-xs font-semibold text-gray-700 bg-white px-1 py-0.5 rounded min-w-[14px] text-center">{brushSize}</span>
             </div>
 
           </div>
         </div>
-
-        {/* Color Palette */}
-        <div className="flex items-center gap-1 mt-3">
-          <span className="text-xs text-gray-600 mr-2">Quick colors:</span>
-          {colorPalette.map((color) => (
-            <button
-              key={color}
-              onClick={() => setCurrentColor(color)}
-              className={`w-6 h-6 rounded border-2 transition-transform hover:scale-110 ${
-                currentColor === color ? 'border-gray-800 scale-110' : 'border-gray-300'
-              }`}
-              style={{ backgroundColor: color }}
-            />
-          ))}
-        </div>
       </div>
 
-      {/* Canvas Area */}
-      <div className="flex-1 p-4">
-        <div className="h-full bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
-          <canvas
-            ref={canvasRef}
-            className={`w-full h-full block ${
-              isInitializing 
-                ? 'cursor-wait opacity-50' 
-                : hasCompletedStroke 
-                  ? 'cursor-not-allowed opacity-75' 
-                  : 'cursor-crosshair'
-            }`}
-            onMouseDown={startDrawing}
-            onMouseMove={draw}
-            onMouseUp={stopDrawing}
-            onMouseLeave={stopDrawing}
-            onClick={() => console.log('Canvas clicked!')}
-            style={{ 
-              touchAction: 'none',
-              display: 'block'
-            }}
-          />
-        </div>
+      {/* Canvas Area - Takes all remaining space */}
+      <div className="flex-1 flex items-center justify-center min-h-0">
+        <canvas
+          ref={canvasRef}
+          width={720}
+          height={530}
+          className={`block rounded-xl shadow-inner ${
+            isInitializing 
+              ? 'cursor-wait opacity-50' 
+              : hasCompletedStroke 
+                ? 'cursor-not-allowed opacity-75' 
+                : 'cursor-crosshair'
+          }`}
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
+          onMouseUp={stopDrawing}
+          onClick={() => console.log('Canvas clicked!')}
+          style={{ 
+            touchAction: 'none',
+            display: 'block',
+            width: '720px',
+            height: '530px',
+            border: '2px solid #000000',
+            backgroundColor: 'white',
+            borderRadius: '12px'
+          }}
+        />
       </div>
 
-      {/* Footer */}
-      <div className="bg-white border-t border-gray-200 px-4 py-2">
-        <div className="flex items-center justify-between text-xs text-gray-500">
+      {/* Footer - Fixed at bottom */}
+      <div className="bg-white bg-opacity-90 backdrop-blur-sm border-t border-gray-200 px-4 py-0.5 rounded-b-2xl flex-shrink-0">
+        <div className="flex items-center justify-between text-xs text-gray-600">
           <div className="flex gap-4">
             <button
               onClick={() => navigateTo('https://www.reddit.com/r/DevvitDrawApp')}
-              className="hover:text-blue-600 transition-colors"
+              className="hover:text-blue-600 transition-colors font-medium hover:underline"
             >
               r/DevvitDrawApp
             </button>
             <button
               onClick={() => navigateTo('https://developers.reddit.com/docs')}
-              className="hover:text-blue-600 transition-colors"
+              className="hover:text-blue-600 transition-colors font-medium hover:underline"
             >
               Devvit Docs
             </button>
           </div>
-          <span>🖌️ Click and drag to draw • Touch supported</span>
+          <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent font-semibold">
+            🖌️ Click and drag to draw • Touch supported
+          </span>
         </div>
       </div>
     </div>

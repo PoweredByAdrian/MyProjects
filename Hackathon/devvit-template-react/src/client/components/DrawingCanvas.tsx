@@ -1,6 +1,7 @@
 import React, { RefObject } from 'react';
 import CooldownNotification from './CooldownNotification';
 import { CompletionOverlay } from './CompletionOverlay';
+import { MAX_STROKES } from '../../shared/constants';
 
 interface DrawingCanvasProps {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -153,7 +154,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             🎉 Artwork Complete! 🎉
           </div>
           <div style={{ fontSize: '16px', marginBottom: '15px' }}>
-            This collaborative masterpiece has reached 5 strokes!
+            This collaborative masterpiece has reached {MAX_STROKES} strokes!
           </div>
           <div style={{ fontSize: '14px', color: '#ffd700' }}>
             Creating final post and preparing new canvas...

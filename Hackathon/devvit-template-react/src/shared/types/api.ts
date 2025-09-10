@@ -19,7 +19,7 @@ export type SaveDrawingResponse = {
   postId: string;
   success: boolean;
   strokeCount?: number; // Number of total strokes for this post
-  completed?: boolean; // Whether this artwork has reached the 5-stroke limit
+  completed?: boolean; // Whether this artwork has reached the maximum stroke limit
   timestamp: number; // When this drawing was saved
 };
 

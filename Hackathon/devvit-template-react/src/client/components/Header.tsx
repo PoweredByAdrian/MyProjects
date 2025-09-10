@@ -1,4 +1,5 @@
 import React from 'react';
+import { MAX_STROKES } from '../../shared/constants';
 
 interface HeaderProps {
   username: string;
@@ -29,9 +30,9 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
           <div className="flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
             <span className="text-xs font-semibold text-blue-700">
-              📊 Strokes: {currentStrokeCount}/5
+              📊 Strokes: {currentStrokeCount}/{MAX_STROKES}
             </span>
-            {currentStrokeCount >= 5 && (
+            {currentStrokeCount >= MAX_STROKES && (
               <span className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded-full font-medium shadow-sm">
                 🎉 Complete!
               </span>

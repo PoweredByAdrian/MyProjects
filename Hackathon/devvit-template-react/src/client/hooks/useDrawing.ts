@@ -80,7 +80,7 @@ export const useDrawing = ({
       return;
     }
     
-    // Check if artwork is completed (5 strokes reached)
+    // Check if artwork is completed (max strokes reached)
     if (isArtworkCompletedRef.current) {
       console.log('BLOCKED: This artwork is completed! No more drawing allowed.');
       e.preventDefault();
@@ -257,9 +257,9 @@ export const useDrawing = ({
           checkCooldown();
         }
         
-        // Check if artwork is completed (5 strokes reached)
+        // Check if artwork is completed (max strokes reached)
         if (result.completed) {
-          console.log('🎉 Artwork completed! 5 strokes reached.');
+          console.log('🎉 Artwork completed! Maximum strokes reached.');
           // Trigger completion workflow with the correct stroke count from server
           onArtworkComplete(result.strokeCount);
         }

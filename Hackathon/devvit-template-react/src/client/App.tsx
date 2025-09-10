@@ -60,7 +60,7 @@ export const App = () => {
     });
   }, [checkLoadingComplete]);
 
-  // Check if artwork is permanently completed (reached 5 strokes)
+  // Check if artwork is permanently completed (reached max strokes)
   const checkArtworkCompletion = async () => {
     if (!postId) return;
 
@@ -137,7 +137,7 @@ export const App = () => {
     // redrawPreservedStrokes,
   });
 
-  // Handle artwork completion (5 strokes reached) - now has access to loadDrawing
+  // Handle artwork completion (max strokes reached) - now has access to loadDrawing
   const handleArtworkCompletion = async (finalStrokeCount?: number) => {
     if (!canvasRef.current || !postId) return;
     

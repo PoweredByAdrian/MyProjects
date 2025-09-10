@@ -1,5 +1,6 @@
 import express from 'express';
 import { InitResponse, SaveDrawingRequest, SaveDrawingResponse, LoadDrawingRequest, LoadDrawingResponse, CheckUpdateRequest, CheckUpdateResponse, CheckCooldownRequest, CheckCooldownResponse, CompleteArtworkRequest, CompleteArtworkResponse } from '../shared/types/api';
+import { MAX_STROKES } from '../shared/constants';
 import { redis, reddit, createServer, context, getServerPort, media } from '@devvit/web/server';
 import { createPost } from './core/post';
 
@@ -281,10 +282,10 @@ router.post<{}, SaveDrawingResponse | { status: string; message: string }, SaveD
       const newStrokeCount = await redis.incrBy(`strokes:${postId}`, 1);
       console.log(`📈 Stroke count for post ${postId}: ${newStrokeCount} at ${new Date(timestamp).toLocaleString()}`);
       
-      // Check if artwork is completed (5 strokes)
-      const completed = newStrokeCount >= 5;
-      
-      // Mark artwork as completed in Redis if it reaches 5 strokes
+      // Check if artwork is completed (max strokes reached)
+      const completed = newStrokeCount >= MAX_STROKES;
+
+      // Mark artwork as completed in Redis if it reaches max strokes
       if (completed) {
         await redis.set(`completed:${postId}`, 'true');
         console.log(`🏁 Artwork ${postId} marked as completed after ${newStrokeCount} strokes`);
@@ -585,7 +586,7 @@ router.post<{}, { strokeCount: number; metadata?: any; gifData?: any } | { statu
   }
 );
 
-// Complete artwork endpoint - when 5 strokes are reached
+// Complete artwork endpoint - when max strokes are reached
 router.post<{}, CompleteArtworkResponse | { status: string; message: string }, CompleteArtworkRequest>(
   '/api/complete-artwork',
   async (req, res): Promise<void> => {

@@ -1,5 +1,5 @@
 import express from 'express';
-import { InitResponse, SaveDrawingRequest, SaveDrawingResponse, LoadDrawingRequest, LoadDrawingResponse, CheckUpdateRequest, CheckUpdateResponse, CheckCooldownRequest, CheckCooldownResponse } from '../shared/types/api';
+import { InitResponse, SaveDrawingRequest, SaveDrawingResponse, LoadDrawingRequest, LoadDrawingResponse, CheckUpdateRequest, CheckUpdateResponse, CheckCooldownRequest, CheckCooldownResponse, CompleteArtworkRequest, CompleteArtworkResponse } from '../shared/types/api';
 import { redis, reddit, createServer, context, getServerPort, media } from '@devvit/web/server';
 import { createPost } from './core/post';
 
@@ -13,28 +13,37 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 const router = express.Router();
 
 // Cooldown duration in milliseconds (5 minutes = 300,000 ms)
-const COOLDOWN_DURATION = 5 * 60 * 1000; // 5 minutes
+const COOLDOWN_DURATION = 1 * 1000 * 5; // 5 minutes
 
 // Function to check if user is in cooldown
 async function checkUserCooldown(userId: string, postId: string): Promise<{ canDraw: boolean; cooldownRemaining?: number; lastDrawTime?: number }> {
   if (!userId) {
+    console.log('🔍 checkUserCooldown: No userId provided');
     return { canDraw: true }; // Allow anonymous users for now
   }
   
-  const lastDrawTimeStr = await redis.get(`cooldown:${postId}:${userId}`);
+  const cooldownKey = `cooldown:${postId}:${userId}`;
+  console.log(`🔍 checkUserCooldown: Checking key ${cooldownKey}`);
+  
+  const lastDrawTimeStr = await redis.get(cooldownKey);
   
   if (!lastDrawTimeStr) {
+    console.log('🔍 checkUserCooldown: No previous draw time found');
     return { canDraw: true }; // No previous draw time
   }
   
   const lastDrawTime = parseInt(lastDrawTimeStr);
   const timeSinceLastDraw = Date.now() - lastDrawTime;
   
+  console.log(`🔍 checkUserCooldown: Last draw time: ${new Date(lastDrawTime).toLocaleString()}, time since: ${timeSinceLastDraw}ms, cooldown duration: ${COOLDOWN_DURATION}ms`);
+  
   if (timeSinceLastDraw >= COOLDOWN_DURATION) {
+    console.log('🔍 checkUserCooldown: Cooldown expired - can draw');
     return { canDraw: true, lastDrawTime };
   }
   
   const cooldownRemaining = Math.ceil((COOLDOWN_DURATION - timeSinceLastDraw) / 1000); // in seconds
+  console.log(`🔍 checkUserCooldown: Still on cooldown - ${cooldownRemaining} seconds remaining`);
   return { canDraw: false, cooldownRemaining, lastDrawTime };
 }
 
@@ -232,6 +241,16 @@ router.post<{}, SaveDrawingResponse | { status: string; message: string }, SaveD
 
       console.log(`Saving drawing for post ${postId}, data size: ${drawingData.length} characters`);
       
+      // Check if artwork is already completed
+      const isCompleted = await redis.get(`completed:${postId}`);
+      if (isCompleted === 'true') {
+        res.status(403).json({
+          status: 'error',
+          message: 'This artwork is already completed. No more strokes can be added.',
+        });
+        return;
+      }
+      
       // Get current user ID for cooldown checking
       const currentUser = await reddit.getCurrentUser();
       const userId = currentUser?.id;
@@ -262,8 +281,14 @@ router.post<{}, SaveDrawingResponse | { status: string; message: string }, SaveD
       const newStrokeCount = await redis.incrBy(`strokes:${postId}`, 1);
       console.log(`📈 Stroke count for post ${postId}: ${newStrokeCount} at ${new Date(timestamp).toLocaleString()}`);
       
-      // Check if artwork is completed (500 strokes)
-      const completed = newStrokeCount >= 500;
+      // Check if artwork is completed (5 strokes)
+      const completed = newStrokeCount >= 5;
+      
+      // Mark artwork as completed in Redis if it reaches 5 strokes
+      if (completed) {
+        await redis.set(`completed:${postId}`, 'true');
+        console.log(`🏁 Artwork ${postId} marked as completed after ${newStrokeCount} strokes`);
+      }
       
       // Post the current canvas image to the subreddit after each stroke
       await postCanvasImageToSubreddit(postId, drawingData, newStrokeCount);
@@ -392,6 +417,40 @@ router.post<{}, CheckUpdateResponse | { status: string; message: string }, Check
   }
 );
 
+// Check if artwork is completed endpoint
+router.post<{}, { isCompleted: boolean; strokeCount?: number } | { status: string; message: string }, { postId: string }>(
+  '/api/check-completion',
+  async (req, res): Promise<void> => {
+    try {
+      const { postId } = req.body;
+      
+      if (!postId) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Missing postId',
+        });
+        return;
+      }
+
+      const isCompleted = await redis.get(`completed:${postId}`);
+      const strokeCountStr = await redis.get(`strokes:${postId}`);
+      const strokeCount = strokeCountStr ? parseInt(strokeCountStr) : 0;
+      
+      res.json({
+        isCompleted: isCompleted === 'true',
+        strokeCount
+      });
+      
+    } catch (error) {
+      console.error(`Error checking completion for post ${req.body?.postId}:`, error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to check completion status',
+      });
+    }
+  }
+);
+
 // Check user cooldown endpoint
 router.post<{}, CheckCooldownResponse | { status: string; message: string }, CheckCooldownRequest>(
   '/api/check-cooldown',
@@ -411,8 +470,11 @@ router.post<{}, CheckCooldownResponse | { status: string; message: string }, Che
       const currentUser = await reddit.getCurrentUser();
       const userId = currentUser?.id;
       
+      console.log(`🔍 Check cooldown for post ${postId}, user: ${userId || 'anonymous'}`);
+      
       if (!userId) {
         // Allow anonymous users or users without ID
+        console.log('🔍 No user ID - allowing drawing');
         res.json({
           type: 'check-cooldown',
           postId,
@@ -422,6 +484,8 @@ router.post<{}, CheckCooldownResponse | { status: string; message: string }, Che
       }
 
       const cooldownResult = await checkUserCooldown(userId, postId);
+      
+      console.log(`🔍 Cooldown result for user ${userId}:`, cooldownResult);
       
       res.json({
         type: 'check-cooldown',
@@ -516,6 +580,156 @@ router.post<{}, { strokeCount: number; metadata?: any; gifData?: any } | { statu
       res.status(500).json({
         status: 'error',
         message: 'Failed to get drawing stats',
+      });
+    }
+  }
+);
+
+// Complete artwork endpoint - when 5 strokes are reached
+router.post<{}, CompleteArtworkResponse | { status: string; message: string }, CompleteArtworkRequest>(
+  '/api/complete-artwork',
+  async (req, res): Promise<void> => {
+    try {
+      const { currentPostId, finalImage, strokeCount } = req.body;
+      
+      if (!currentPostId || !finalImage) {
+        res.status(400).json({
+          status: 'error',
+          message: 'currentPostId and finalImage are required'
+        });
+        return;
+      }
+      
+      console.log(`🎉 Completing artwork for post ${currentPostId} with ${strokeCount} strokes`);
+      
+      // Upload the final image to Reddit
+      const imageData = finalImage.split(',')[1];
+      if (!imageData) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Invalid image data'
+        });
+        return;
+      }
+      
+      const uploadedImage = await media.upload({
+        url: finalImage,
+        type: 'image',
+      });
+      
+      // Create a new post with the completed artwork as a rich text post with image
+      const subreddit = await reddit.getSubredditByName(context.subredditName!);
+      const finalPost = await subreddit.submitPost({
+        title: `🎨 Collaborative Masterpiece Complete! (${strokeCount} strokes)`,
+        richtext: {
+          document: [
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: '🎉 ',
+                  f: [[0, 11, 1]] // Bold
+                },
+                {
+                  e: 'text',
+                  t: 'Community Art Project Complete!',
+                  f: [[0, 31, 1]] // Bold
+                }
+              ]
+            },
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: '�️ **Final Collaborative Artwork:**'
+                }
+              ]
+            },
+            {
+              e: 'img',
+              id: uploadedImage.mediaId
+            },
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: `🖌️ **Final Stats:** ${strokeCount} total strokes`
+                }
+              ]
+            },
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: '👥 **Contributors:** Community artists from our collaborative canvas'
+                }
+              ]
+            },
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: '🎨 **The Journey:** This artwork was created through the collective creativity of our community. Each stroke was carefully placed by a different artist, building upon the work of those who came before.'
+                }
+              ]
+            },
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: 'Thank you to everyone who participated in this amazing collaborative art project!'
+                }
+              ]
+            },
+            {
+              e: 'par',
+              c: [
+                {
+                  e: 'text',
+                  t: '✨ Want to start a new collaborative artwork? Create a new DevvitDrawApp post!'
+                }
+              ]
+            }
+          ]
+        }
+      });
+      
+      console.log(`Final artwork posted as ${finalPost.id}`);
+      
+      // Mark the current post as completed
+      const metadata = {
+        postId: currentPostId,
+        totalStrokes: strokeCount,
+        endTime: Date.now(),
+        isCompleted: true,
+        finalPostId: finalPost.id
+      };
+      await redis.set(`metadata:${currentPostId}`, JSON.stringify(metadata));
+      await redis.set(`completed:${currentPostId}`, 'true');
+      
+      // Create a new collaborative drawing post
+      const newPost = await createPost();
+      
+      console.log(`New collaborative drawing started with post ${newPost.id}`);
+      
+      res.json({
+        type: 'complete-artwork',
+        success: true,
+        newPostId: newPost.id,
+        finalPostUrl: `https://reddit.com/r/${context.subredditName}/comments/${finalPost.id}`
+      });
+      
+    } catch (error) {
+      console.error('Error completing artwork:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to complete artwork'
       });
     }
   }

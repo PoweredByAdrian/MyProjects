@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 interface UseCooldownProps {
   postId: string;
   isInitializing: boolean;
+  onCooldownExpired?: () => void;
 }
 
 interface CooldownState {
@@ -11,7 +12,7 @@ interface CooldownState {
   isOnCooldown: boolean;
 }
 
-export const useCooldown = ({ postId, isInitializing }: UseCooldownProps) => {
+export const useCooldown = ({ postId, isInitializing, onCooldownExpired }: UseCooldownProps) => {
   const [cooldownState, setCooldownState] = useState<CooldownState>({
     canDraw: true,
     cooldownRemaining: 0,
@@ -21,7 +22,9 @@ export const useCooldown = ({ postId, isInitializing }: UseCooldownProps) => {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const checkCooldown = async () => {
-    if (!postId || isInitializing) return;
+    if (!postId || isInitializing) {
+      return;
+    }
 
     try {
       const response = await fetch('/api/check-cooldown', {
@@ -32,6 +35,7 @@ export const useCooldown = ({ postId, isInitializing }: UseCooldownProps) => {
 
       if (response.ok) {
         const result = await response.json();
+        
         setCooldownState({
           canDraw: result.canDraw,
           cooldownRemaining: result.cooldownRemaining || 0,
@@ -42,6 +46,8 @@ export const useCooldown = ({ postId, isInitializing }: UseCooldownProps) => {
         if (!result.canDraw && result.cooldownRemaining > 0) {
           startCountdown(result.cooldownRemaining);
         }
+      } else {
+        console.error('Cooldown check failed:', response.status, response.statusText);
       }
     } catch (error) {
       console.error('Error checking cooldown:', error);
@@ -69,6 +75,10 @@ export const useCooldown = ({ postId, isInitializing }: UseCooldownProps) => {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
         }
+        // Call the callback when cooldown expires
+        if (onCooldownExpired) {
+          onCooldownExpired();
+        }
       } else {
         setCooldownState(prev => ({
           ...prev,
@@ -86,7 +96,24 @@ export const useCooldown = ({ postId, isInitializing }: UseCooldownProps) => {
 
   // Check cooldown on mount and when postId changes
   useEffect(() => {
+    console.log('useCooldown useEffect triggered:', { postId: !!postId, isInitializing });
     checkCooldown();
+  }, [postId, isInitializing]);
+
+  // Also check cooldown periodically (every 10 seconds)
+  useEffect(() => {
+    if (!postId || isInitializing) return;
+    
+    console.log('Setting up periodic cooldown check');
+    const interval = setInterval(() => {
+      console.log('Periodic cooldown check...');
+      checkCooldown();
+    }, 10000); // Check every 10 seconds
+
+    return () => {
+      console.log('Clearing periodic cooldown check');
+      clearInterval(interval);
+    };
   }, [postId, isInitializing]);
 
   // Cleanup interval on unmount

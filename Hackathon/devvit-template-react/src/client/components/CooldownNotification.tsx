@@ -30,12 +30,15 @@ const CooldownNotification: React.FC<CooldownNotificationProps> = ({
       }}
     >
       <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '10px' }}>
-        Drawing Cooldown
+        🎨 Drawing Cooldown
       </div>
       <div style={{ fontSize: '14px', marginBottom: '10px' }}>
-        You need to wait before drawing again
+        You can watch others draw while you wait!
       </div>
-      <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ff6b6b' }}>
+      <div style={{ fontSize: '12px', marginBottom: '10px', opacity: 0.8 }}>
+        You'll be able to draw again in:
+      </div>
+      <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4CAF50' }}>
         {formatTime(remainingTime)}
       </div>
     </div>

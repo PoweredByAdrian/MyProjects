@@ -8,6 +8,8 @@ interface UseDrawingProps {
   brushSize: number;
   isInitializing: boolean;
   hasCompletedStroke: boolean;
+  isArtworkCompleted: boolean;
+  isArtworkPermanentlyCompleted?: boolean;
   setIsDrawing: (drawing: boolean) => void;
   setUserHasDrawn: (drawn: boolean) => void;
   setHasCompletedStroke: (completed: boolean) => void;
@@ -15,6 +17,12 @@ interface UseDrawingProps {
   setLastKnownTimestamp: (timestamp?: number) => void;
   setCurrentStrokeCount: (count: number) => void;
   postId: string;
+  onArtworkComplete: (finalStrokeCount?: number) => void;
+  checkCooldown?: () => void;
+  // TEMPORARILY DISABLED: Stroke preservation functions to debug canvas disappearing
+  // startStrokePreservation: (x: number, y: number, color: string, width: number) => void;
+  // addPointToStrokePreservation: (x: number, y: number) => void;
+  // finishStrokePreservation: () => void;
 }
 
 export const useDrawing = ({
@@ -23,6 +31,8 @@ export const useDrawing = ({
   brushSize,
   isInitializing,
   hasCompletedStroke,
+  isArtworkCompleted,
+  isArtworkPermanentlyCompleted = false,
   setIsDrawing,
   setUserHasDrawn,
   setHasCompletedStroke,
@@ -30,18 +40,26 @@ export const useDrawing = ({
   setLastKnownTimestamp,
   setCurrentStrokeCount,
   postId,
+  onArtworkComplete,
+  checkCooldown,
+  // TEMPORARILY DISABLED: Stroke preservation functions to debug canvas disappearing
+  // startStrokePreservation,
+  // addPointToStrokePreservation,
+  // finishStrokePreservation,
 }: UseDrawingProps) => {
   const currentColorRef = useRef(currentColor);
   const brushSizeRef = useRef(brushSize);
   const isDrawingRef = useRef(false);
   const hasCompletedStrokeRef = useRef(hasCompletedStroke);
   const isInitializingRef = useRef(isInitializing);
+  const isArtworkCompletedRef = useRef(isArtworkCompleted);
 
   // Update refs when values change
   currentColorRef.current = currentColor;
   brushSizeRef.current = brushSize;
   hasCompletedStrokeRef.current = hasCompletedStroke;
   isInitializingRef.current = isInitializing;
+  isArtworkCompletedRef.current = isArtworkCompleted;
 
   const startDrawing = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     console.log('startDrawing called! isInitializing:', isInitializing, 'hasCompletedStroke:', hasCompletedStroke);
@@ -49,6 +67,22 @@ export const useDrawing = ({
     // Check if app is still initializing (use ref for immediate check)
     if (isInitializingRef.current) {
       console.log('BLOCKED: App is still initializing, please wait...');
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    
+    // Check if artwork is permanently completed (no one can draw anymore)
+    if (isArtworkPermanentlyCompleted) {
+      console.log('BLOCKED: This artwork is permanently completed! No more drawing allowed from anyone.');
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    
+    // Check if artwork is completed (5 strokes reached)
+    if (isArtworkCompletedRef.current) {
+      console.log('BLOCKED: This artwork is completed! No more drawing allowed.');
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -79,6 +113,9 @@ export const useDrawing = ({
     if (ctx) {
       console.log('Drawing at coordinates:', x, y, 'with color:', currentColorRef.current, 'size:', brushSizeRef.current);
       
+      // TEMPORARILY DISABLED: Start stroke preservation to debug canvas disappearing
+      // startStrokePreservation(x, y, currentColorRef.current, brushSizeRef.current);
+      
       // Close any existing path first to prevent connecting to old strokes
       ctx.closePath();
       
@@ -96,7 +133,7 @@ export const useDrawing = ({
       
       console.log('Started new drawing path at:', x, y, 'with style:', ctx.strokeStyle, 'width:', ctx.lineWidth);
     }
-  }, [canvasRef, isInitializing, hasCompletedStroke, setIsDrawing, setUserHasDrawn]);
+  }, [canvasRef, isInitializing, hasCompletedStroke, isArtworkCompleted, setIsDrawing, setUserHasDrawn]);
 
   const draw = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     // Early return if not actually drawing - don't even log
@@ -104,6 +141,17 @@ export const useDrawing = ({
     
     // Check if app is still initializing (use ref for immediate check)
     if (isInitializingRef.current) {
+      return;
+    }
+    
+    // Check if artwork is permanently completed (no one can draw anymore)
+    if (isArtworkPermanentlyCompleted) {
+      console.log('BLOCKED: This artwork is permanently completed! No more drawing allowed from anyone.');
+      return;
+    }
+    
+    // Check if artwork is completed (use ref for immediate check)
+    if (isArtworkCompletedRef.current) {
       return;
     }
     
@@ -131,6 +179,10 @@ export const useDrawing = ({
       }
       
       console.log('Mouse move - drawing line to:', x, y, 'strokeStyle:', ctx.strokeStyle, 'lineWidth:', ctx.lineWidth);
+      
+      // TEMPORARILY DISABLED: Add point to stroke preservation to debug canvas disappearing
+      // addPointToStrokePreservation(x, y);
+      
       ctx.lineTo(x, y);
       ctx.stroke();
     }
@@ -167,9 +219,18 @@ export const useDrawing = ({
       console.log('Closed drawing path');
     }
     
+    // TEMPORARILY DISABLED: Finish stroke preservation to debug canvas disappearing
+    // finishStrokePreservation();
+    
     // Mark that user has completed their one stroke for this session
     setHasCompletedStroke(true);
     hasCompletedStrokeRef.current = true; // Update ref immediately for instant checks
+    
+    // Set cooldown state immediately - don't wait for server response
+    if (checkCooldown) {
+      console.log('Setting cooldown state immediately after stroke completion');
+      checkCooldown();
+    }
     
     // Save immediately when drawing stops
     try {
@@ -190,17 +251,23 @@ export const useDrawing = ({
         // Update last load time to prevent immediate overwrite from polling
         setLastLoadTime(Date.now());
         
-        // Check if artwork is completed (500 strokes reached)
+        // Trigger cooldown check again after save to get accurate remaining time
+        if (checkCooldown) {
+          console.log('Triggering cooldown check after drawing save');
+          checkCooldown();
+        }
+        
+        // Check if artwork is completed (5 strokes reached)
         if (result.completed) {
-          console.log('🎉 Artwork completed! 500 strokes reached.');
-          // Show a completion message
-          alert('🎉 Congratulations! This collaborative artwork has reached 500 strokes and is now complete!\n\nA time-lapse GIF is being generated and will be posted to the subreddit shortly. Thank you for being part of this amazing community art project!');
+          console.log('🎉 Artwork completed! 5 strokes reached.');
+          // Trigger completion workflow with the correct stroke count from server
+          onArtworkComplete(result.strokeCount);
         }
       }
     } catch (error) {
       console.error('Failed to save drawing after stroke completion:', error);
     }
-  }, [canvasRef, postId, setIsDrawing, setHasCompletedStroke, setLastLoadTime, setLastKnownTimestamp, setCurrentStrokeCount]);
+  }, [canvasRef, postId, setIsDrawing, setHasCompletedStroke, setLastLoadTime, setLastKnownTimestamp, setCurrentStrokeCount, onArtworkComplete]);
 
   return {
     startDrawing,

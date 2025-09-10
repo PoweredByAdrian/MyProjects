@@ -12,10 +12,14 @@ interface UseCanvasSetupProps {
   isDrawing: boolean;
   currentColor: string;
   brushSize: number;
+  lastLoadTime: number;
   setUserHasDrawn: (drawn: boolean) => void;
   setHasLoadedInitialDrawing: (loaded: boolean) => void;
   setIsDrawing: (drawing: boolean) => void;
   setHasCompletedStroke: (completed: boolean) => void;
+  setLastLoadTime: (time: number) => void;
+  // TEMPORARILY DISABLED: redrawPreservedStrokes to debug canvas disappearing
+  redrawPreservedStrokes?: () => void;
 }
 
 export const useCanvasSetup = ({
@@ -28,10 +32,13 @@ export const useCanvasSetup = ({
   isDrawing,
   currentColor,
   brushSize,
+  lastLoadTime,
   setUserHasDrawn,
   setHasLoadedInitialDrawing,
   setIsDrawing,
   setHasCompletedStroke,
+  setLastLoadTime,
+  redrawPreservedStrokes,
 }: UseCanvasSetupProps) => {
   
   // Track if initial stroke has been drawn to prevent redrawing
@@ -49,7 +56,14 @@ export const useCanvasSetup = ({
       return;
     }
 
-    // Don't load if user has completed their stroke (unless manual refresh)
+    // Be more conservative about loading after user has drawn something
+    const timeSinceLastLoad = Date.now() - lastLoadTime;
+    if (hasCompletedStroke && !forceRefresh && timeSinceLastLoad < 3000) {
+      console.log('Skipping load - user recently completed a stroke, waiting longer to avoid overwriting');
+      return;
+    }
+
+    // Don't load if user has completed their stroke (unless manual refresh and enough time has passed)
     if (hasCompletedStroke && !forceRefresh) {
       console.log('Skipping load - user has completed their stroke');
       return;
@@ -69,16 +83,19 @@ export const useCanvasSetup = ({
       if (data?.drawingData) {
         await renderDrawingData(data.drawingData);
         setHasLoadedInitialDrawing(true);
+        setLastLoadTime(Date.now());
       }
     } catch (error) {
       console.error('Failed to load drawing:', error);
     }
-  }, [postId, isDrawing, hasCompletedStroke, isInitializing, setHasLoadedInitialDrawing]);
+  }, [postId, isDrawing, hasCompletedStroke, isInitializing, setHasLoadedInitialDrawing, setLastLoadTime, lastLoadTime]);
 
   const renderDrawingData = useCallback(async (drawingData: string) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
+
+    console.log('🎨 renderDrawingData called - this will redraw the entire canvas');
 
     // Check if this is initial stroke metadata
     if (drawingData.startsWith('data:application/json;base64,')) {
@@ -90,7 +107,7 @@ export const useCanvasSetup = ({
         return;
       }
       
-      console.log('Drawing initial stroke...');
+      console.log('🎨 Drawing initial stroke - clearing canvas...');
       
       // Decode the base64 JSON data
       const base64Data = drawingData.replace('data:application/json;base64,', '');
@@ -146,21 +163,21 @@ export const useCanvasSetup = ({
         ctx.globalAlpha = 1.0;
         
         console.log('🎨 Initial stroke drawn on canvas (first time)');
+        
+        // TEMPORARILY DISABLED: Redraw preserved strokes to debug canvas disappearing
+        // setTimeout(() => {
+        //   console.log('🛡️ Redrawing preserved strokes after initial stroke');
+        //   redrawPreservedStrokes();
+        // }, 50);
+        
         return;
       }
     }
     
     // Handle regular image data (PNG/JPEG/SVG data URLs)
-    // Save current canvas state if user has drawn something during normal collaboration updates
-    let currentCanvasData = null;
-    if (userHasDrawn && !isInitializing) {
-      currentCanvasData = canvas.toDataURL();
-      console.log('Saved current user drawing before loading collaborative updates');
-    }
-    
     const img = new Image();
     img.onload = () => {
-      console.log('Loading collaborative drawing, preserving user work:', !!currentCanvasData);
+      console.log('🎨 Loading collaborative drawing - this WILL CLEAR the canvas and redraw everything');
       
       // First set white background
       const dpr = window.devicePixelRatio || 1;
@@ -170,39 +187,28 @@ export const useCanvasSetup = ({
       // Then draw the loaded collaborative image
       ctx.drawImage(img, 0, 0, canvas.width / dpr, canvas.height / dpr);
       
-      // If user had current work and this is during collaboration, blend it back
-      if (currentCanvasData && !isInitializing) {
-        const userImg = new Image();
-        userImg.onload = () => {
-          // Blend user's current work on top using a lighter composite mode
-          ctx.globalCompositeOperation = 'multiply';
-          ctx.globalAlpha = 0.7;
-          ctx.drawImage(userImg, 0, 0, canvas.width / dpr, canvas.height / dpr);
-          
-          // Reset for normal drawing
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 1.0;
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          
-          console.log('Blended user drawing with collaborative updates');
-        };
-        userImg.src = currentCanvasData;
-      } else {
-        // Reset drawing settings to ensure canvas is still drawable
-        ctx.strokeStyle = currentColor;
-        ctx.lineWidth = brushSize;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1.0;
-      }
+      // Reset drawing settings to ensure canvas is still drawable
+      ctx.strokeStyle = currentColor;
+      ctx.lineWidth = brushSize;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1.0;
+      
+      console.log('✅ Collaborative drawing loaded - canvas has been fully redrawn with server data');
+      
+      // TEMPORARILY DISABLED: Redraw preserved strokes to debug canvas disappearing
+      // setTimeout(() => {
+      //   console.log('🛡️ Redrawing preserved strokes after collaborative update');
+      //   redrawPreservedStrokes();
+      // }, 50); // Small delay to ensure canvas is ready
     };
+    
     img.onerror = (e) => {
       console.error('Failed to load image:', e);
     };
     img.src = drawingData;
-  }, [canvasRef, userHasDrawn, currentColor, brushSize, isInitializing, hasDrawnInitialStroke]);
+  }, [canvasRef, userHasDrawn, currentColor, brushSize, isInitializing, hasDrawnInitialStroke, redrawPreservedStrokes]);
 
   // Setup canvas with proper dimensions and touch event listeners
   useEffect(() => {

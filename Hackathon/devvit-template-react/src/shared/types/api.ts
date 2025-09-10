@@ -19,7 +19,7 @@ export type SaveDrawingResponse = {
   postId: string;
   success: boolean;
   strokeCount?: number; // Number of total strokes for this post
-  completed?: boolean; // Whether this artwork has reached the 500-stroke limit
+  completed?: boolean; // Whether this artwork has reached the 5-stroke limit
   timestamp: number; // When this drawing was saved
 };
 
@@ -56,4 +56,17 @@ export type CheckCooldownResponse = {
   canDraw: boolean;
   cooldownRemaining?: number; // Seconds remaining in cooldown, if any
   lastDrawTime?: number; // Timestamp of last draw
+};
+
+export type CompleteArtworkRequest = {
+  currentPostId: string;
+  finalImage: string; // Base64 canvas data
+  strokeCount: number;
+};
+
+export type CompleteArtworkResponse = {
+  type: 'complete-artwork';
+  success: boolean;
+  newPostId?: string;
+  finalPostUrl?: string;
 };

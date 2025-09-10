@@ -1,10 +1,14 @@
 import React from 'react';
 import { navigateTo } from '@devvit/web/client';
 
-export const Footer: React.FC = () => {
+interface FooterProps {
+  hasCompletedStroke: boolean;
+}
+
+export const Footer: React.FC<FooterProps> = ({ hasCompletedStroke }) => {
   return (
-    <div className="bg-white bg-opacity-90 backdrop-blur-sm border-t border-gray-200 px-4 py-0.5 rounded-b-2xl flex-shrink-0">
-      <div className="flex items-center justify-between text-xs text-gray-600">
+    <div className="bg-white bg-opacity-90 backdrop-blur-sm border-t border-gray-200 px-6 py-0.5 rounded-b-2xl flex-shrink-0">
+      <div className="flex items-center justify-between text-xs text-gray-600 mx-2">
         <div className="flex gap-4">
           <button
             onClick={() => navigateTo('https://www.reddit.com/r/DevvitDrawApp')}
@@ -20,7 +24,11 @@ export const Footer: React.FC = () => {
           </button>
         </div>
         <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent font-semibold">
-          🖌️ Click and drag to draw • Touch supported
+          {hasCompletedStroke ? (
+            "✅ Your stroke added!"
+          ) : (
+            "🖌️ Click and drag to draw • Touch supported"
+          )}
         </span>
       </div>
     </div>

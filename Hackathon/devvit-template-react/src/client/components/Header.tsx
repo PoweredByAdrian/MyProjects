@@ -3,7 +3,6 @@ import React from 'react';
 interface HeaderProps {
   username: string;
   currentStrokeCount: number;
-  hasCompletedStroke: boolean;
   currentColor: string;
   setCurrentColor: (color: string) => void;
   brushSize: number;
@@ -13,7 +12,6 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   username,
   currentStrokeCount,
-  hasCompletedStroke,
   currentColor,
   setCurrentColor,
   brushSize,
@@ -31,21 +29,14 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
           <div className="flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
             <span className="text-xs font-semibold text-blue-700">
-              📊 Strokes: {currentStrokeCount}/500
+              📊 Strokes: {currentStrokeCount}/5
             </span>
-            {currentStrokeCount >= 500 && (
+            {currentStrokeCount >= 5 && (
               <span className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded-full font-medium shadow-sm">
                 🎉 Complete!
               </span>
             )}
           </div>
-          {hasCompletedStroke && (
-            <div className="px-2 py-0.5 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg shadow-sm">
-              <span className="text-xs font-semibold text-green-700">
-                ✅ Your stroke added!
-              </span>
-            </div>
-          )}
         </div>
         
         {/* Tools */}
